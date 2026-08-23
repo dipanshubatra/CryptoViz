@@ -46,6 +46,34 @@ describe("Worker Communication Suite", () => {
     expect(mockErrorResponse.error).toContain("Invalid key format");
   });
 
+  it("returns a structured error for malformed runtime messages", async () => {
+    const addEventListenerSpy = vi.spyOn(globalThis as any, "addEventListener");
+    const postMessageSpy = vi.spyOn(globalThis as any, "postMessage").mockImplementation(() => {});
+
+    await import("@/lib/workers/cipher.worker");
+    const messageCall = addEventListenerSpy.mock.calls.find(call => call[0] === "message");
+    expect(messageCall).toBeDefined();
+    const listener = messageCall![1] as any;
+
+    await listener({
+      data: {
+        type: "EXECUTE",
+        requestId: "req-invalid",
+        payload: {
+          type: "encrypt",
+          cipherId: { malicious: true },
+          input: "hello",
+          key: "key",
+        },
+      },
+    });
+
+    const response = postMessageSpy.mock.calls.at(-1)?.[0] as any;
+    expect(response.success).toBe(false);
+    expect(response.requestId).toBe("req-invalid");
+    expect(response.payload.errorCode).toBe("INVALID_WORKER_MESSAGE");
+  });
+
   it("should throw CipherError with ALGORITHM_UNSUPPORTED for unknown cipher IDs", async () => {
     // Setup global spies before importing the worker (which runs immediately)
     const addEventListenerSpy = vi.spyOn(globalThis as any, "addEventListener");
@@ -62,9 +90,10 @@ describe("Worker Communication Suite", () => {
     // Trigger the listener with an unknown cipher ID
     await listener({
       data: {
-        type: "encrypt",
+        type: "EXECUTE",
         requestId: "req-unknown",
         payload: {
+          type: "encrypt",
           cipherId: "fake-cipher-123",
           input: "hello",
           key: "key",
@@ -75,13 +104,16 @@ describe("Worker Communication Suite", () => {
 
     // Verify the response
     expect(postMessageSpy).toHaveBeenCalled();
-    const response = postMessageSpy.mock.calls[0][0] as any;
+    const response = postMessageSpy.mock.calls
+      .map((c) => c[0] as { requestId?: string; success?: boolean; payload?: { errorCode?: string; error?: string } })
+      .find((msg) => msg?.requestId === "req-unknown");
 
-    expect(response.success).toBe(false);
-    expect(response.payload.errorCode).toBe("ALGORITHM_UNSUPPORTED");
-    expect(response.payload.errorMessage).toContain("fake-cipher-123");
+    expect(response).toBeDefined();
+    expect(response?.success).toBe(false);
+    expect(response?.payload?.errorCode).toBe("ALGORITHM_UNSUPPORTED");
+    expect(response?.payload?.error).toContain("fake-cipher-123");
   });
-});
+
   describe("Dynamic Cipher Module Lazy-Loading", () => {
     it("dynamically imports and executes a classical cipher module (caesar)", async () => {
       const caesarMod = await import("@/lib/cipher/classical/caesar");
@@ -111,3 +143,4 @@ describe("Worker Communication Suite", () => {
     });
   });
 });
+
